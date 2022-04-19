@@ -1,0 +1,45 @@
+CREATE VIEW Retention_monthly_retail AS
+WITH cohort_items as(
+	SELECT TO_CHAR(TO_DATE(first_purchase_date, 'DD.MM.YYYY'), 'MM') AS starting_month, user_id, first_purchase_date
+	FROM first_purchases AS fp
+	WHERE product_line = 'Retail store'
+	ORDER by 1,2),
+	user_activities as (	
+	SELECT cu.user_id, date_part('month', TO_DATE(pu.purchase_date, 'DD.MM.YYYY')) - date_part('month', TO_DATE(cu.first_purchase_date, 'DD.MM.YYYY')) as mon_diff
+	FROM purchases pu
+		INNER JOIN cohort_items cu
+		ON cu.user_id = pu.user_id
+	WHERE date_part('month', TO_DATE(pu.purchase_date, 'DD.MM.YYYY')) - date_part('month', TO_DATE(cu.first_purchase_date, 'DD.MM.YYYY')) <> 0
+	GROUP BY 2, 1),
+	filter_month as(
+	SELECT u.user_id, 
+	unnest(CASE 
+		WHEN  array_to_string(public.sort_asc(array_agg(u.mon_diff)::integer[]), ',') ~ '^1,2,3,4,5,6,7' THEN array[1,2,3,4,5,6,7]
+		WHEN  array_to_string(public.sort_asc(array_agg(u.mon_diff)::integer[]), ',') ~ '^1,2,3,4,5,6' THEN array[1,2,3,4,5,6]
+		WHEN  array_to_string(public.sort_asc(array_agg(u.mon_diff)::integer[]), ',') ~ '^1,2,3,4,5' THEN array[1,2,3,4,5]
+		WHEN  array_to_string(public.sort_asc(array_agg(u.mon_diff)::integer[]), ',') ~ '^1,2,3,4' THEN array[1,2,3,4]
+		WHEN  array_to_string(public.sort_asc(array_agg(u.mon_diff)::integer[]), ',') ~ '^1,2,3' THEN array[1,2,3]
+		WHEN  array_to_string(public.sort_asc(array_agg(u.mon_diff)::integer[]), ',') ~ '^1,2' THEN array[1,2]
+		WHEN  array_to_string(public.sort_asc(array_agg(u.mon_diff)::integer[]), ',') ~ '^1' THEN array[1]
+		END) consecutive_month
+	FROM user_activities AS u
+	GROUP BY u.user_id
+	HAVING  array_to_string(array_agg(u.mon_diff), ',') ~ '^1' 
+	),
+    cohort_size as (
+	SELECT ci.starting_month, count(1) as num_users
+	FROM cohort_items as ci
+	GROUP BY 1
+	ORDER BY 1),
+	retention_table as(
+	SELECT ci.starting_month, re.consecutive_month, count(1) as num_users
+	FROM filter_month as re
+	LEFT join cohort_items ci 
+	ON re.user_id = ci.user_id
+	GROUP BY 1, 2
+)
+SELECT r.starting_month AS First_purchase_month, s.num_users AS Total_users_Initial_month, r.consecutive_month AS Next_month, r.num_users AS users_next_month
+FROM retention_table r
+LEFT JOIN cohort_size s 
+ON r.starting_month = s.starting_month
+ORDER BY 1, 3;
